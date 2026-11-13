@@ -13,6 +13,38 @@ constexpr float blockHeight = 58.0f;
 constexpr float handleRadius = 7.0f;
 constexpr float edgeHitWidth = 7.0f;
 constexpr int32 curveSampleCount = 32;
+
+void paintTriangle(
+    const FVector2D& first,
+    const FVector2D& second,
+    const FVector2D& third,
+    const FGeometry& geometry,
+    const FLinearColor& color,
+    const FSlateBrush& brush,
+    FSlateWindowElementList& drawElements,
+    const int32 layerId,
+    const ESlateDrawEffect drawEffects)
+{
+    TArray<FSlateVertex> vertices;
+    vertices.Reserve(3);
+    for (const FVector2D& point : {first, second, third})
+    {
+        FSlateVertex& vertex = vertices.AddDefaulted_GetRef();
+        vertex.Position = FVector2f(geometry.LocalToAbsolute(point));
+        vertex.Color = color.ToFColor(false);
+    }
+    const TArray<SlateIndex> indices = {0, 1, 2};
+    FSlateDrawElement::MakeCustomVerts(
+        drawElements,
+        layerId,
+        brush.GetRenderingResource(),
+        vertices,
+        indices,
+        nullptr,
+        0,
+        0,
+        drawEffects);
+}
 }
 
 void SFaceTouchCorrectionLane::Construct(const FArguments& arguments)
@@ -152,32 +184,57 @@ int32 SFaceTouchCorrectionLane::OnPaint(
             drawEffects,
             FLinearColor::White);
 
-        for (const int32 handleFrame : {
-                 correction.touchStartFrame,
-                 correction.touchEndFrame})
+        for (const TPair<int32, EDragTarget>& handle : {
+                 TPair<int32, EDragTarget>(
+                     correction.touchStartFrame,
+                     EDragTarget::TouchStart),
+                 TPair<int32, EDragTarget>(
+                     correction.touchEndFrame,
+                     EDragTarget::TouchEnd)})
         {
-            const float handleX = getFrameOffset(handleFrame);
-            FSlateDrawElement::MakeBox(
+            const float handleX = getFrameOffset(handle.Key);
+            const bool isHovered = hoveredHit.correctionIndex == correctionIndex &&
+                hoveredHit.target == handle.Value;
+            const float handleSize = isHovered ? 10.0f : 8.0f;
+            const float halfSize = handleSize * 0.5f;
+            const bool pointsLeft = handle.Value == EDragTarget::TouchStart;
+            const FVector2D tip(
+                handleX + (pointsLeft ? -halfSize : halfSize),
+                halfSize);
+            const float baseX = handleX + (pointsLeft ? halfSize : -halfSize);
+            paintTriangle(
+                tip,
+                FVector2D(baseX, 0.0f),
+                FVector2D(baseX, handleSize),
+                allottedGeometry,
+                isHovered
+                    ? FLinearColor(0.96f, 0.96f, 1.0f, 1.0f)
+                    : FLinearColor(0.86f, 0.86f, 0.9f, 1.0f),
+                *brush,
                 outDrawElements,
                 layerId + 5,
-                allottedGeometry.ToPaintGeometry(
-                    FVector2D(8.0f, 8.0f),
-                    FSlateLayoutTransform(FVector2D(handleX - 4.0f, 0.0f))),
-                brush,
-                drawEffects,
-                FLinearColor(0.86f, 0.86f, 0.9f, 1.0f));
+                drawEffects);
         }
-        for (const float edgeX : {left, right})
+        for (const TPair<float, EDragTarget>& edge : {
+                 TPair<float, EDragTarget>(left, EDragTarget::ApproachZero),
+                 TPair<float, EDragTarget>(right, EDragTarget::RecoveryZero)})
         {
+            const bool isHovered = hoveredHit.correctionIndex == correctionIndex &&
+                hoveredHit.target == edge.Value;
+            const float edgeWidth = isHovered ? 3.0f : 2.0f;
             FSlateDrawElement::MakeBox(
                 outDrawElements,
                 layerId + 5,
                 allottedGeometry.ToPaintGeometry(
-                    FVector2D(2.0f, blockHeight),
-                    FSlateLayoutTransform(FVector2D(edgeX - 1.0f, 0.0f))),
+                    FVector2D(edgeWidth, blockHeight),
+                    FSlateLayoutTransform(FVector2D(
+                        edge.Key - edgeWidth * 0.5f,
+                        0.0f))),
                 brush,
                 drawEffects,
-                FLinearColor(0.8f, 0.8f, 0.84f, 1.0f));
+                isHovered
+                    ? FLinearColor(0.94f, 0.94f, 0.98f, 1.0f)
+                    : FLinearColor(0.8f, 0.8f, 0.84f, 1.0f));
         }
     }
 
@@ -214,6 +271,7 @@ FReply SFaceTouchCorrectionLane::OnMouseButtonDown(
 
     draggedCorrectionIndex = hit.correctionIndex;
     dragTarget = hit.target;
+    hoveredHit = hit;
     correctionAtDragStart = corrections[hit.correctionIndex];
     cursorFrameAtDragStart = getFrameAtOffset(localPosition.X);
     return FReply::Handled().CaptureMouse(SharedThis(this));
@@ -223,12 +281,21 @@ FReply SFaceTouchCorrectionLane::OnMouseMove(
     const FGeometry& myGeometry,
     const FPointerEvent& mouseEvent)
 {
+    const FVector2D localPosition = myGeometry.AbsoluteToLocal(
+        mouseEvent.GetScreenSpacePosition());
     if (!HasMouseCapture() || !corrections.IsValidIndex(draggedCorrectionIndex))
     {
+        const FHitResult newHoveredHit = hitTest(localPosition.X, localPosition.Y);
+        if (newHoveredHit.correctionIndex != hoveredHit.correctionIndex ||
+            newHoveredHit.target != hoveredHit.target)
+        {
+            hoveredHit = newHoveredHit;
+            Invalidate(EInvalidateWidgetReason::Paint);
+        }
         return FReply::Unhandled();
     }
     updateDrag(
-        myGeometry.AbsoluteToLocal(mouseEvent.GetScreenSpacePosition()).X,
+        localPosition.X,
         false);
     return FReply::Handled();
 }
@@ -246,7 +313,21 @@ FReply SFaceTouchCorrectionLane::OnMouseButtonUp(
         true);
     draggedCorrectionIndex = INDEX_NONE;
     dragTarget = EDragTarget::None;
+    const FVector2D localPosition = myGeometry.AbsoluteToLocal(
+        mouseEvent.GetScreenSpacePosition());
+    hoveredHit = hitTest(localPosition.X, localPosition.Y);
+    Invalidate(EInvalidateWidgetReason::Paint);
     return FReply::Handled().ReleaseMouseCapture();
+}
+
+void SFaceTouchCorrectionLane::OnMouseLeave(const FPointerEvent& mouseEvent)
+{
+    SLeafWidget::OnMouseLeave(mouseEvent);
+    if (!HasMouseCapture() && hoveredHit.correctionIndex != INDEX_NONE)
+    {
+        hoveredHit = {};
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
 }
 
 SFaceTouchCorrectionLane::FHitResult SFaceTouchCorrectionLane::hitTest(

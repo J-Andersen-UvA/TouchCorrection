@@ -49,6 +49,7 @@ public:
     virtual FReply OnMouseButtonUp(
         const FGeometry& myGeometry,
         const FPointerEvent& mouseEvent) override;
+    virtual void OnMouseLeave(const FPointerEvent& mouseEvent) override;
 
 private:
     enum class EDragTarget
@@ -79,6 +80,7 @@ private:
     int32 selectedCorrectionIndex = INDEX_NONE;
     int32 draggedCorrectionIndex = INDEX_NONE;
     EDragTarget dragTarget = EDragTarget::None;
+    FHitResult hoveredHit;
     FFaceTouchCorrectionBlock correctionAtDragStart;
     int32 cursorFrameAtDragStart = 0;
     float zoom = 1.0f;
